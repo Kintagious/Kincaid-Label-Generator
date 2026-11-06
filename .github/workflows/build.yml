@@ -1,0 +1,83 @@
+# Builds the Windows .exe, the Mac .app and the Linux programs on GitHub's computers.
+#
+# Test build: open the "Actions" tab, pick "Build", click "Run workflow", and download the
+# results from the finished run.
+#
+# Public release (what the website's Download buttons point to): push a version tag, e.g.
+#     git tag v2.2.1 && git push origin v2.2.1
+# When all four builds finish, they're attached to a GitHub Release with fixed file names, so
+# https://github.com/<you>/<repo>/releases/latest/download/<file> always serves the newest one.
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: copy target\release\kincaid-label-generator.exe Kincaid-Label-Generator-Windows.exe
+        shell: cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kincaid-Label-Generator-Windows
+          path: Kincaid-Label-Generator-Windows.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: bash packaging/macos/make-app.sh --universal
+      - run: cd target && ditto -c -k --keepParent "Kincaid Label Generator.app" ../Kincaid-Label-Generator-Mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kincaid-Label-Generator-Mac
+          path: Kincaid-Label-Generator-Mac.zip
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm # 64-bit ARM, e.g. Raspberry Pi 3/4/5 with a 64-bit OS
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev
+      - run: cargo build --release
+      - run: cargo test --release
+      # packed as .tar.gz so the file stays marked as a program after downloading
+      - run: |
+          mkdir -p pkg && cp target/release/kincaid-label-generator pkg/
+          tar -czf kincaid-label-generator-linux-${{ matrix.arch }}.tar.gz -C pkg kincaid-label-generator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kincaid-Label-Generator-Linux-${{ matrix.arch }}
+          path: kincaid-label-generator-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
